@@ -3,7 +3,8 @@
 #include "kernel/types.h"
 #include "user/user.h"
 #include "kernel/fcntl.h"
-
+#include "kernel/stat.h"
+#include "kernel/fs.h"
 // Parsed command representation
 #define EXEC  1
 #define REDIR 2
@@ -72,14 +73,31 @@ runcmd(struct cmd *cmd)
   default:
     panic("runcmd");
 
-  case EXEC:
-    ecmd = (struct execcmd*)cmd;
-    if(ecmd->argv[0] == 0)
-      exit(1);
-    exec(ecmd->argv[0], ecmd->argv);
-    fprintf(2, "exec %s failed\n", ecmd->argv[0]);
-    break;
+case EXEC: {
+  ecmd = (struct execcmd*)cmd;
+  if(ecmd->argv[0] == 0)
+    exit(0);
 
+  // ---- builtin: wait ----
+  if(strcmp(ecmd->argv[0], "wait") == 0){
+    // Reap all children until none remain
+    while (wait(0) != -1)
+      ;
+    exit(0);
+  }
+
+  // ---- builtin: cd (already there in most sh.c versions) ----
+  if(strcmp(ecmd->argv[0], "cd") == 0){
+    if(ecmd->argv[1] == 0 || chdir(ecmd->argv[1]) < 0)
+      fprintf(2, "cannot cd %s\n", ecmd->argv[1] ? ecmd->argv[1] : "");
+    exit(0);
+  }
+
+  // ---- default: run external program ----
+  exec(ecmd->argv[0], ecmd->argv);
+  fprintf(2, "exec %s failed\n", ecmd->argv[0]);
+  break;
+}
   case REDIR:
     rcmd = (struct redircmd*)cmd;
     close(rcmd->fd);
@@ -130,11 +148,14 @@ runcmd(struct cmd *cmd)
   }
   exit(0);
 }
-
 int
 getcmd(char *buf, int nbuf)
 {
-  write(2, "$ ", 2);
+  struct stat st;
+  fstat(0, &st);           // check stdin
+  if (st.type == T_DEVICE) // only print $ if input is a device (console)
+    printf("$ ");
+
   memset(buf, 0, nbuf);
   gets(buf, nbuf);
   if(buf[0] == 0) // EOF
