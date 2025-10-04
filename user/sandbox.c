@@ -41,7 +41,7 @@ main(int argc, char *argv[])
     exit(1);
   }
   if(pid == 0) {
-    if (interpose(atoi(argv[mask]), argv[mask+1]) < 0) {
+  if (interpose((uint64)atoi(argv[mask]), argv[mask+1]) < 0) {
       printf("%s: interpose failed", argv[0]);
       exit(1);
     }

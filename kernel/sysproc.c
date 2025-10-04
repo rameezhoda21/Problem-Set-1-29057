@@ -105,3 +105,32 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+uint64
+sys_sandbox(void)
+{
+  int on;
+  uint64 mask;
+
+  // arg helpers fill the outputs; no return value to test
+  argint(0, &on);
+  argaddr(1, &mask);
+
+  struct proc *p = myproc();
+  p->sandbox_on  = on ? 1 : 0;
+  p->sandbox_mask = mask;
+  return 0;
+}
+extern struct proc* myproc(void);
+
+uint64
+sys_interpose(void)
+{
+  int m;                   // mask is an int per lab text
+  uint64 pathptr;          // we don't use it in sandbox_mask test
+  argint(0, &m);
+  argaddr(1, &pathptr);    // placeholder for the path (used in next task)
+
+  myproc()->scmask = (uint64)m;
+  return 0;
+}
+

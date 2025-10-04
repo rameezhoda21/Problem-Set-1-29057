@@ -145,7 +145,7 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
-
+  p->scmask = 0;
   return p;
 }
 
@@ -287,8 +287,9 @@ kfork(void)
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
-  pid = np->pid;
+  np->scmask = p->scmask;   // <-- copy interpose/sandbox mask from parent to child
 
+  pid = np->pid;
   release(&np->lock);
 
   acquire(&wait_lock);
