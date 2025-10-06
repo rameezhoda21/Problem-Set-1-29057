@@ -139,12 +139,33 @@ walkaddr(pagetable_t pagetable, uint64 va)
   pa = PTE2PA(*pte);
   return pa;
 }
+static void
+vmprint_walk(pagetable_t pagetable, int level)
+{
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if (pte & PTE_V) {
+      // indentation: ".. " repeated per level
+      for (int d = 0; d < level; d++)
+        printf(".. ");
 
+      uint64 pa = PTE2PA(pte);
+printf("%d: pte %p pa %p\n", i, (void*)pte, (void*)pa);
+
+      // If NOT a leaf (no R/W/X), this PTE points to the next-level pagetable.
+      if ((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+        vmprint_walk((pagetable_t)pa, level + 1);
+      }
+    }
+  }
+}
 
 #if defined(LAB_PGTBL) || defined(SOL_MMAP) || defined(SOL_COW)
 void
 vmprint(pagetable_t pagetable) {
-  // your code here
+printf("page table %p\n", pagetable);
+  vmprint_walk(pagetable, 1);
+
 }
 #endif
 
