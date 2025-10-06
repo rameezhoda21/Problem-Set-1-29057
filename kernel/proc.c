@@ -111,13 +111,11 @@ allocproc(void)
 {
   struct proc *p;
 
-  for(p = proc; p < &proc[NPROC]; p++) {
+  for(p = proc; p < &proc[NPROC]; p++){
     acquire(&p->lock);
-    if(p->state == UNUSED) {
+    if(p->state == UNUSED)
       goto found;
-    } else {
-      release(&p->lock);
-    }
+    release(&p->lock);
   }
   return 0;
 
@@ -125,14 +123,22 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
-  // Allocate a trapframe page.
-  if((p->trapframe = (struct trapframe *)kalloc()) == 0){
+  // 1) trapframe
+  if((p->trapframe = (struct trapframe*)kalloc()) == 0){
     freeproc(p);
     release(&p->lock);
     return 0;
   }
 
-  // An empty user page table.
+  // 2) per-proc usyscall page (must exist before proc_pagetable maps it)
+  if((p->usys = (struct usyscall*)kalloc()) == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  p->usys->pid = p->pid;
+
+  // 3) build user pagetable (maps TRAMPOLINE, TRAPFRAME, and USYSCALL)
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
     freeproc(p);
@@ -140,15 +146,13 @@ found:
     return 0;
   }
 
-  // Set up new context to start executing at forkret,
-  // which returns to user space.
+  // context
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
   return p;
 }
-
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
@@ -160,6 +164,11 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+
+if(p->usys){
+    kfree((void*)p->usys);
+    p->usys = 0;
+  }
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -173,38 +182,38 @@ freeproc(struct proc *p)
 
 // Create a user page table for a given process, with no user memory,
 // but with trampoline and trapframe pages.
+// kernel/proc.c
+
 pagetable_t
 proc_pagetable(struct proc *p)
 {
-  pagetable_t pagetable;
+  pagetable_t pagetable = uvmcreate();
+  if(pagetable == 0) return 0;
 
-  // An empty page table.
-  pagetable = uvmcreate();
-  if(pagetable == 0)
-    return 0;
-
-  // map the trampoline code (for system call return)
-  // at the highest user virtual address.
-  // only the supervisor uses it, on the way
-  // to/from user space, so not PTE_U.
   if(mappages(pagetable, TRAMPOLINE, PGSIZE,
               (uint64)trampoline, PTE_R | PTE_X) < 0){
     uvmfree(pagetable, 0);
     return 0;
   }
 
-  // map the trapframe page just below the trampoline page, for
-  // trampoline.S.
   if(mappages(pagetable, TRAPFRAME, PGSIZE,
-              (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
+              (uint64)p->trapframe, PTE_R | PTE_W) < 0){
     uvmunmap(pagetable, TRAMPOLINE, 1, 0);
     uvmfree(pagetable, 0);
     return 0;
   }
 
+  // *** Map the user-syscall page (READ-ONLY to user) at USYSCALL ***
+  // Convert the kernel VA (p->usys) to a physical address for mappages.
+if (mappages(pagetable, USYSCALL, PGSIZE,
+             (uint64)p->usys, PTE_R | PTE_U) < 0) {
+  uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+  uvmfree(pagetable, 0);
+  return 0;
+}
   return pagetable;
 }
-
 // Free a process's page table, and free the
 // physical memory it refers to.
 void
@@ -212,6 +221,7 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  uvmunmap(pagetable, USYSCALL, 1, 0);  // 0 => do not free physical mem here
   uvmfree(pagetable, sz);
 }
 
@@ -260,7 +270,7 @@ kfork(void)
   struct proc *np;
   struct proc *p = myproc();
 
-  // Allocate process.
+  // Allocate child process (allocproc sets up trapframe/usys/pagetable).
   if((np = allocproc()) == 0){
     return -1;
   }
@@ -273,22 +283,39 @@ kfork(void)
   }
   np->sz = p->sz;
 
-  // copy saved user registers.
+  // Copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
-  // Cause fork to return 0 in the child.
+  // fork() returns 0 in the child.
   np->trapframe->a0 = 0;
 
-  // increment reference counts on open file descriptors.
+  // --- Ensure child's USYSCALL content and mapping are correct ---
+  // Child's usys page should report the child's PID.
+  if(np->usys)
+    np->usys->pid = np->pid;
+
+  // Re-map USYSCALL for the child as user-read-only.
+  // (Unmap first to avoid duplicate mapping; do not free the physical page.)
+  uvmunmap(np->pagetable, USYSCALL, 1, 0);
+  if(mappages(np->pagetable, USYSCALL, PGSIZE,
+              (uint64)np->usys, PTE_R | PTE_U) < 0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
+  // ---------------------------------------------------------------
+
+  // Bump FDs.
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  // Name, pid snapshot.
   safestrcpy(np->name, p->name, sizeof(p->name));
-
   pid = np->pid;
 
+  // Finish setup.
   release(&np->lock);
 
   acquire(&wait_lock);
