@@ -1,0 +1,13 @@
+Each leaf PTE (has any of R/W/X set) maps one virtual page (VPN) to a physical page (PPN) and carries permission bits.
+Each non-leaf PTE (R=W=X=0, V=1) only points to the next page-table level.
+xv6 does not keep user pages physically contiguous, so adjacent virtual pages may map to non-adjacent physical pages.
+
+V (Valid): entry is present.
+
+R/W/X: readable / writable / executable.
+
+U (User): accessible from U-mode if set.
+
+Besides getpid, we can speed up “read-only info” calls by putting their values on the USYSCALL page and reading them in user space.
+Easy wins are uptime() (mirror the ticks counter on timer interrupts), getppid() (store parent PID on fork()/reparent), CPU info (last_cpu on context switch, ncpus at boot),
+and the process size (p->sz after sbrk/exec), plus constants like HZ and PGSIZE. Map the page user-read-only so these become simple loads with no trap overhead.
